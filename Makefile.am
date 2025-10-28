@@ -21,177 +21,106 @@
 # SPDX-License-Identifier: curl
 #
 ###########################################################################
+AUTOMAKE_OPTIONS = foreign nostdinc
 
-if BUILD_DOCS
-# if we disable man page building, ignore these
-RUNTESTS_DOCS = runtests.1
-TESTCURL_DOCS = testcurl.1
-MANFILES = $(RUNTESTS_DOCS) $(TESTCURL_DOCS)
+# Specify our include paths here, and do it relative to $(top_srcdir) and
+# $(top_builddir), to ensure that these paths which belong to the library
+# being currently built and tested are searched before the library which
+# might possibly already be installed in the system.
+#
+# $(top_srcdir)/include is for libcurl's external include files
+# $(top_builddir)/lib is for libcurl's generated lib/curl_config.h file
+# $(top_srcdir)/lib for libcurl's lib/curl_setup.h and other "borrowed" files
+
+AM_CPPFLAGS = -I$(top_srcdir)/include        \
+              -I$(top_builddir)/lib          \
+              -I$(top_srcdir)/lib            \
+              -I$(top_srcdir)/tests/libtest
+
+EXTRA_DIST = test307.pl test610.pl test613.pl test1013.pl test1022.pl   \
+  CMakeLists.txt mk-lib1521.pl .checksrc
+
+CFLAG_CURL_SYMBOL_HIDING = @CFLAG_CURL_SYMBOL_HIDING@
+
+CFLAGS += @CURL_CFLAG_EXTRAS@
+
+CLEANFILES = lib1521.c
+
+# Prevent LIBS from being used for all link targets
+LIBS = $(BLANK_AT_MAKETIME)
+
+SUPPORTFILES_LIBS = $(top_builddir)/lib/libcurl.la @LIBCURL_PC_LIBS_PRIVATE@
+TESTUTIL_LIBS = $(top_builddir)/lib/libcurl.la @LIBCURL_PC_LIBS_PRIVATE@
+
+# Dependencies (may need to be overridden)
+LDADD = $(SUPPORTFILES_LIBS)
+
+# Makefile.inc provides the source defines (TESTUTIL, SUPPORTFILES,
+# LIBTESTPROGS, lib*_SOURCES, and lib*_CFLAGS)
+include Makefile.inc
+
+noinst_LTLIBRARIES =
+
+if USE_CPPFLAG_CURL_STATICLIB
+AM_CPPFLAGS += -DCURL_STATICLIB
 endif
 
-CURLPAGES = runtests.md testcurl.md
+AM_LDFLAGS =
+AM_CFLAGS =
 
-# scripts used in test cases
-TESTSCRIPTS = \
- test1119.pl  \
- test1132.pl  \
- test1135.pl  \
- test1139.pl  \
- test1140.pl  \
- test1165.pl  \
- test1167.pl  \
- test1173.pl  \
- test1175.pl  \
- test1177.pl  \
- test1222.pl  \
- test1275.pl  \
- test1276.pl  \
- test1477.pl  \
- test1486.pl  \
- test1488.pl  \
- test1544.pl  \
- test1707.pl  \
- test971.pl
+libstubgss_la_LDFLAGS_EXTRA =
 
-EXTRA_DIST =        \
- CMakeLists.txt     \
- FILEFORMAT.md      \
- README.md          \
- appveyor.pm        \
- azure.pm           \
- devtest.pl         \
- dictserver.py      \
- directories.pm     \
- ech_combos.py      \
- ech_tests.sh       \
- ftpserver.pl       \
- getpart.pm         \
- globalconfig.pm    \
- http-server.pl     \
- http2-server.pl    \
- http3-server.pl    \
- memanalyze.pl      \
- mk-bundle-hints.sh \
- mk-bundle.pl       \
- negtelnetserver.py \
- nghttpx.conf       \
- pathhelp.pm        \
- processhelp.pm     \
- requirements.txt   \
- rtspserver.pl      \
- runner.pm          \
- runtests.pl        \
- secureserver.pl    \
- serverhelp.pm      \
- servers.pm         \
- smbserver.py       \
- sshhelp.pm         \
- sshserver.pl       \
- stunnel.pem        \
- testcurl.pl        \
- testutil.pm        \
- tftpserver.pl      \
- util.py            \
- valgrind.pm        \
- valgrind.supp      \
- $(TESTSCRIPTS)     \
- $(CURLPAGES)
-
-# we have two variables here to make sure DIST_SUBDIRS won't get 'unit'
-# added twice as then targets such as 'distclean' misbehave and try to
-# do things twice in that subdir at times (and thus fails).
-if BUILD_UNITTESTS
-BUILD_UNIT = unit
-DIST_UNIT =
-else
-BUILD_UNIT =
-DIST_UNIT = unit
+if CURL_LT_SHLIB_USE_NO_UNDEFINED
+libstubgss_la_LDFLAGS_EXTRA += -no-undefined
 endif
 
-SUBDIRS = certs data server libtest http $(BUILD_UNIT)
-DIST_SUBDIRS = $(SUBDIRS) $(DIST_UNIT)
+# Build a stub gssapi implementation for testing
+if BUILD_STUB_GSS
+noinst_LTLIBRARIES += libstubgss.la
 
-PERLFLAGS = -I$(srcdir)
+libstubgss_la_CPPFLAGS = $(AM_CPPFLAGS)
+libstubgss_la_LDFLAGS = $(AM_LDFLAGS) $(libstubgss_la_LDFLAGS_EXTRA) -avoid-version -rpath /nowhere
+libstubgss_la_CFLAGS = $(AM_CFLAGS) -g
 
-CLEANFILES = .http.pid .https.pid .ftp.pid .ftps.pid $(MANDISTPAGES)
+libstubgss_la_SOURCES = stub_gssapi.c stub_gssapi.h
 
-curl:
-	@cd $(top_builddir) && $(MAKE)
+libstubgss_la_LIBADD =
+libstubgss_la_DEPENDENCIES =
+endif
 
-TEST_COMMON =
-
-if CROSSCOMPILING
-TEST = @echo "NOTICE: we can't run the tests when cross-compiling!"
-PYTEST = $(TEST)
-else # if not cross-compiling:
 if USE_TEST_BUNDLES
-TEST_COMMON += -bundle
+AM_CPPFLAGS += -DCURL_NO_GETADDRINFO_OVERRIDE
+
+libtest_bundle.c: $(top_srcdir)/tests/mk-bundle.pl lib1521.c
+	@PERL@ $(top_srcdir)/tests/mk-bundle.pl $(srcdir) > libtest_bundle.c
+
+noinst_PROGRAMS = libtests
+nodist_libtests_SOURCES = libtest_bundle.c
+libtests_SOURCES = $(TESTUTIL) $(TSTTRACE)
+libtests_LDADD = $(TESTUTIL_LIBS)
+CLEANFILES += libtest_bundle.c
+
+if USE_CPPFLAG_CURL_STATICLIB
+else
+# These are part of the libcurl static lib. Add them here when linking shared.
+libtests_SOURCES += $(WARNLESS) $(MULTIBYTE) $(TIMEDIFF) $(THREADS)
+endif
+else
+noinst_PROGRAMS = $(LIBTESTPROGS)
 endif
 
-TEST = srcdir=$(srcdir) $(PERL) $(PERLFLAGS) $(srcdir)/runtests.pl $(TEST_COMMON)
-TEST_Q = -a -s
-TEST_AM = -a -am
-TEST_F = -a -p -r
-TEST_T = -a -t -j20
-TEST_E = -a -e
+lib1521.c: $(top_srcdir)/tests/libtest/mk-lib1521.pl $(top_srcdir)/include/curl/curl.h
+	@PERL@ $(top_srcdir)/tests/libtest/mk-lib1521.pl < $(top_srcdir)/include/curl/curl.h lib1521.c
 
-# ~<keyword> means that it will run all tests matching the keyword, but will
-# ignore their results (since these ones are likely to fail for no good reason)
-TEST_NF = -a -p ~flaky ~timing-dependent
-
-# special CI target derived from nonflaky with CI-specific flags
-TEST_CI = $(TEST_NF) -r -rm -j20
-
-PYTEST = pytest
-endif
-
-CD2NROFF = $(top_srcdir)/scripts/cd2nroff $< >$@
-
-SUFFIXES = .1 .md
-
-.md.1:
-	$(CD2)$(CD2NROFF)
-
-# make sure that PERL is pointing to an executable
-perlcheck:
-	@if ! test -x "$(PERL)"; then echo "No perl!"; exit 2; fi
-
-test: perlcheck all
-	$(TEST) $(TFLAGS)
-
-quiet-test: perlcheck all
-	$(TEST) $(TEST_Q) $(TFLAGS)
-
-am-test: perlcheck all
-	$(TEST) $(TEST_AM) $(TFLAGS)
-
-ci-test: perlcheck all
-	$(TEST) $(TEST_CI) $(TFLAGS)
-
-full-test: perlcheck all
-	$(TEST) $(TEST_F) $(TFLAGS)
-
-nonflaky-test: perlcheck all
-	$(TEST) $(TEST_NF) $(TFLAGS)
-
-torture-test: perlcheck all
-	$(TEST) $(TEST_T) $(TFLAGS)
-
-event-test: perlcheck all
-	$(TEST) $(TEST_E) $(TFLAGS)
-
-default-pytest: ci-pytest
-
-ci-pytest: all
-	srcdir=$(srcdir) $(PYTEST) -v $(srcdir)/http
+CHECKSRC = $(CS_$(V))
+CS_0 = @echo "  RUN     " $@;
+CS_1 =
+CS_ = $(CS_0)
 
 checksrc:
-	(cd libtest && $(MAKE) checksrc)
-	(cd unit && $(MAKE) checksrc)
-	(cd server && $(MAKE) checksrc)
-	(cd http && $(MAKE) checksrc)
+	$(CHECKSRC)@PERL@ $(top_srcdir)/scripts/checksrc.pl -D$(srcdir) $(srcdir)/*.[ch]
 
-all-local: $(MANFILES)
-
-distclean:
-	rm -f $(MANFILES)
+if DEBUGBUILD
+# for debug builds, we scan the sources on all regular make invokes
+all-local: checksrc
+endif
