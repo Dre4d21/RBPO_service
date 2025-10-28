@@ -21,92 +21,66 @@
 # SPDX-License-Identifier: curl
 #
 ###########################################################################
-option(CURL_TEST_BUNDLES "Bundle libtest and unittest tests into single binaries" OFF)
 
-find_program(TEST_NGHTTPX "nghttpx")
-if(NOT TEST_NGHTTPX)
-  set(TEST_NGHTTPX "nghttpx")
+# Get 'LIBTESTPROGS', '*_SOURCES', 'TESTUTIL', 'TSTTRACE', 'WARNLESS', 'MULTIBYTE', 'TIMEDIFF', 'THREADS', 'FIRSTFILES' variables
+transform_makefile_inc("Makefile.inc" "${CMAKE_CURRENT_BINARY_DIR}/Makefile.inc.cmake")
+include("${CMAKE_CURRENT_BINARY_DIR}/Makefile.inc.cmake")
+
+set_source_files_properties("../../lib/curl_multibyte.c" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+
+add_custom_command(
+  OUTPUT "lib1521.c"
+  COMMAND ${PERL_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/mk-lib1521.pl" < "${PROJECT_SOURCE_DIR}/include/curl/curl.h" "lib1521.c"
+  DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/mk-lib1521.pl"
+    "${PROJECT_SOURCE_DIR}/include/curl/curl.h"
+  VERBATIM)
+
+if(CURL_TEST_BUNDLES)
+  add_custom_command(
+    OUTPUT "libtest_bundle.c"
+    COMMAND ${PERL_EXECUTABLE} "${PROJECT_SOURCE_DIR}/tests/mk-bundle.pl" "${CMAKE_CURRENT_SOURCE_DIR}" > "libtest_bundle.c"
+    DEPENDS
+      "${PROJECT_SOURCE_DIR}/tests/mk-bundle.pl" ${FIRSTFILES} "lib1521.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/Makefile.inc"
+    VERBATIM)
+
+  set(LIBTESTPROGS "libtests")
+  set(libtests_SOURCES "libtest_bundle.c")
+  list(APPEND libtests_SOURCES ${TESTUTIL} ${TSTTRACE})
+  if(LIB_SELECTED STREQUAL LIB_SHARED)
+    # These are part of the libcurl static lib. Add them here when linking shared.
+    list(APPEND libtests_SOURCES ${WARNLESS} ${MULTIBYTE} ${TIMEDIFF} ${THREADS})
+  endif()
 endif()
-mark_as_advanced(TEST_NGHTTPX)
-# Consumed variables: TEST_NGHTTPX
-configure_file("config.in" "${CMAKE_CURRENT_BINARY_DIR}/config" @ONLY)
 
-add_custom_target(testdeps)
-add_subdirectory(http)
-add_subdirectory(http/clients)
-add_subdirectory(server)
-add_subdirectory(libtest)
-add_subdirectory(unit)
-add_subdirectory(certs EXCLUDE_FROM_ALL)
+foreach(_target IN LISTS LIBTESTPROGS)
+  if(DEFINED ${_target}_SOURCES)
+    set(_sources ${${_target}_SOURCES})
+  else()
+    set(_sources ${nodist_${_target}_SOURCES})
+  endif()
 
-function(add_runtests _targetname _test_flags)
-  if(CURL_TEST_BUNDLES)
-    set(_test_flags "${_test_flags} -bundle")
+  if(LIB_SELECTED STREQUAL LIB_STATIC)
+    # These are part of the libcurl static lib. Do not compile/link them again.
+    list(REMOVE_ITEM _sources ${WARNLESS} ${MULTIBYTE} ${TIMEDIFF} ${THREADS})
   endif()
-  # Skip walking through dependent targets before running tests in CI.
-  # This avoids: GNU Make doing a slow re-evaluation of all targets and
-  # skipping them, MSBuild doing a re-evaluation, and actually rebuilding them.
-  unset(_depends)
-  if(NOT _targetname STREQUAL "test-ci")
-    set(_depends "testdeps")
-  endif()
-  # Use a special '$TFLAGS' placeholder as last argument which will be
-  # replaced by the contents of the environment variable in runtests.pl.
-  # This is a workaround for CMake's limitation where commands executed by
-  # 'make' or 'ninja' cannot portably reference environment variables.
-  string(REPLACE " " ";" _test_flags_list "${_test_flags}")
-  add_custom_target(${_targetname}
-    COMMAND
-      "${PERL_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/runtests.pl"
-      ${_test_flags_list}
-      "\$TFLAGS"
-    DEPENDS "${_depends}"
-    VERBATIM USES_TERMINAL
+
+  string(TOUPPER ${_target} _upper_target)
+  set(_target_name "${_target}")
+  add_executable(${_target_name} EXCLUDE_FROM_ALL ${_sources})
+  add_dependencies(testdeps ${_target_name})
+  target_link_libraries(${_target_name} ${LIB_SELECTED} ${CURL_LIBS})
+  target_include_directories(${_target_name} PRIVATE
+    "${PROJECT_BINARY_DIR}/lib"            # for "curl_config.h"
+    "${PROJECT_SOURCE_DIR}/lib"            # for "curl_setup.h"
+    "${PROJECT_SOURCE_DIR}/tests/libtest"  # to be able to build generated tests
   )
-endfunction()
-
-function(add_pytest _targetname _test_flags)
-  unset(_depends)
-  if(NOT _targetname STREQUAL "pytest-ci")
-    set(_depends "test-http-clients")
+  if(NOT CURL_TEST_BUNDLES)
+    set_property(TARGET ${_target_name} APPEND PROPERTY COMPILE_DEFINITIONS ${_upper_target})
   endif()
-  string(REPLACE " " ";" _test_flags_list "${_test_flags}")
-  add_custom_target(${_targetname}
-    COMMAND pytest ${_test_flags_list} "${CMAKE_CURRENT_SOURCE_DIR}/http"
-    DEPENDS "${_depends}"
-    VERBATIM USES_TERMINAL
-  )
-endfunction()
-
-# Create configurehelp.pm, used by tests needing to run the C preprocessor.
-if(MSVC OR CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
-  set(CURL_CPP "\"${CMAKE_C_COMPILER}\" -E")
-  if(APPLE AND CMAKE_OSX_SYSROOT)
-    set(CURL_CPP "${CURL_CPP} -isysroot ${CMAKE_OSX_SYSROOT}")
-  endif()
-  # Add header directories, like autotools builds do.
-  get_property(_include_dirs TARGET ${LIB_SELECTED} PROPERTY INCLUDE_DIRECTORIES)
-  foreach(_include_dir IN LISTS _include_dirs)
-    set(CURL_CPP "${CURL_CPP} -I${_include_dir}")
-  endforeach()
-else()
-  set(CURL_CPP "cpp")
-endif()
-# Generate version script for the linker, for versioned symbols.
-# Consumed variable:
-#   CURL_CPP
-configure_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/configurehelp.pm.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/configurehelp.pm" @ONLY)
-
-add_runtests(test-quiet     "-a -s")
-add_runtests(test-am        "-a -am")
-add_runtests(test-full      "-a -p -r")
-# ~flaky means that it ignores results of tests using the flaky keyword
-add_runtests(test-nonflaky  "-a -p ~flaky ~timing-dependent")
-add_runtests(test-ci        "-a -p ~flaky ~timing-dependent -r -rm -j20")
-add_runtests(test-torture   "-a -t -j20")
-add_runtests(test-event     "-a -e")
-
-add_pytest(curl-pytest      "")
-add_pytest(curl-pytest-ci   "-v")
+  set_property(TARGET ${_target_name} APPEND PROPERTY COMPILE_DEFINITIONS "CURL_NO_GETADDRINFO_OVERRIDE")
+  set_target_properties(${_target_name} PROPERTIES
+    OUTPUT_NAME "${_target}"
+    PROJECT_LABEL "Test libtest ${_target}")
+endforeach()
